@@ -30,7 +30,7 @@ Implementation details: [services](src/main/java/com/procureflow/service) and [e
 | Persistence | Spring Data JPA, Hibernate, Jakarta Persistence mappings |
 | Database | MySQL via MySQL Connector/J |
 | Build | Maven, Spring Boot Maven Plugin |
-| Additional dependencies | Spring Boot Validation and Spring Boot Test starters; no automated test files are committed |
+| Additional dependencies | Spring Boot Validation and Spring Boot Test starters; JUnit 5 / Mockito service tests are included |
 
 Versions and dependencies are defined in [pom.xml](pom.xml).
 
@@ -229,13 +229,31 @@ curl -X POST "http://localhost:8080/api/goods-receipts?purchaseOrderId=1&receipt
 curl http://localhost:8080/api/materials/1
 ```
 
+## Automated tests
+
+Run with JDK 21 and Maven:
+
+```sh
+mvn clean verify
+```
+
+The [service tests](src/test/java/com/procureflow/service) cover 25 test cases, including parameterized cases:
+
+- Requisition item validation, duplicate numbers, material resolution, and approval/rejection transitions.
+- Purchase-order creation from approved requisitions, decimal totals across multiple items, item relationships, duplicate order numbers, and missing prices.
+- Goods-receipt stock updates, receipt relationships, duplicate receipt numbers, empty orders, and missing materials.
+
+Repositories are mocked, so these tests need no running MySQL server or database credentials. [GitHub Actions](.github/workflows/java.yml) compiles, runs tests, and packages the application on Java 21 for pushes and pull requests, then uploads Surefire reports.
+
+**Coverage boundaries:** these are service unit tests, not live database or HTTP integration tests. They do not verify transaction rollback, concurrent requests, JPA mappings, or JSON serialization. The existing ability to receive the same order again using another receipt number remains an unresolved implementation issue described below.
+
 ## Current implementation boundaries
 
 - Receipt processing takes every order line in full. Partial receipts and cancellation are not exposed, despite enum values for those states.
 - A receipt number must be unique, but the service does not prevent receiving the same purchase order again under a different receipt number. Each call would add the full quantities again.
 - Controllers return JPA entities with bidirectional parent/item relationships. No JSON cycle-handling annotations or response DTOs are present; response serialization needs runtime verification.
 - Business validation is implemented through selected service checks and database constraints. No controller `@Valid` usage or global exception handler is included.
-- No automated tests, CI workflow, Swagger/OpenAPI configuration, or Postman collection is committed. A successful build alone would not prove the procurement flow works.
+- JUnit 5 / Mockito unit tests and a Java 21 CI workflow are included. No Swagger/OpenAPI configuration or Postman collection is committed. The tests use mocked repositories; they do not establish database transaction, concurrency, or HTTP serialization correctness.
 
 ## Screenshots and demo evidence
 
