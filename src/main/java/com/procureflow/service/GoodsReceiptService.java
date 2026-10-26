@@ -40,11 +40,21 @@ public class GoodsReceiptService {
             String receiptNumber) {
 
         PurchaseOrder purchaseOrder = purchaseOrderRepository
-                .findById(purchaseOrderId)
+                .findByIdForReceipt(purchaseOrderId)
                 .orElseThrow(() ->
                         new RuntimeException(
                                 "Purchase order not found with id: "
                                         + purchaseOrderId));
+
+        // This workflow receives every line in full: partial/repeated receipts are unsupported.
+        // Check while holding the order lock, before any stock changes.
+        if (purchaseOrder.getStatus() != PurchaseOrderStatus.CREATED
+                && purchaseOrder.getStatus() != PurchaseOrderStatus.SENT_TO_VENDOR) {
+            throw new ReceiptConflictException("Purchase order is not eligible for a full receipt");
+        }
+        if (goodsReceiptRepository.existsByPurchaseOrderId(purchaseOrderId)) {
+            throw new ReceiptConflictException("Purchase order already has a goods receipt");
+        }
 
         if (purchaseOrder.getItems() == null ||
                 purchaseOrder.getItems().isEmpty()) {

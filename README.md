@@ -15,7 +15,7 @@ The project demonstrates layered backend design, relational entity mapping, appr
 - **Vendor master:** manage supplier details, contact information, and active status.
 - **Purchase requisitions:** submit material line items and approve or reject pending requests.
 - **Purchase orders:** convert an approved requisition into an order for an existing vendor; copy material prices and calculate the total with `BigDecimal`.
-- **Goods receipts:** receive all items on an order, add their quantities to material stock, and mark the order as fully received in one transaction.
+- **Goods receipts:** receive all items on an order, add their quantities to material stock, and mark the order as fully received in one transaction. Repeated receipts for the same order are rejected, even with a different receipt number.
 - **Business checks:** reject duplicate business identifiers on creation, invalid requisition quantities, missing material references, and unsupported approval/conversion states.
 
 Implementation details: [services](src/main/java/com/procureflow/service) and [entities](src/main/java/com/procureflow/entity).
@@ -180,7 +180,7 @@ All paths below are relative to `http://localhost:8080`. Routes and parameter na
 | `POST` | `/api/goods-receipts` | Query parameters: `purchaseOrderId`, `receiptNumber` |
 | `GET` | `/api/goods-receipts`, `/api/goods-receipts/{id}` | List receipts or read one receipt |
 
-Create endpoints declare HTTP `201`; successful delete endpoints declare `204`. Service exceptions have no custom HTTP error mapping in the repository.
+Create endpoints declare HTTP `201`; successful delete endpoints declare `204`. Repeated or ineligible order receipts return HTTP `409 Conflict`. Other service exceptions do not yet have a consistent HTTP error mapping.
 
 ### Example requests
 
@@ -231,29 +231,44 @@ curl http://localhost:8080/api/materials/1
 
 ## Automated tests
 
-Run with JDK 21 and Maven:
+Run unit tests with JDK 21 and Maven (no database required):
+
+```sh
+mvn test
+```
+
+Run the complete build, including MySQL integration tests, with **Docker running**:
 
 ```sh
 mvn clean verify
 ```
 
-The [service tests](src/test/java/com/procureflow/service) cover 25 test cases, including parameterized cases:
+The [service unit tests](src/test/java/com/procureflow/service) use mocked repositories. They cover requisition validation/transitions, order totals, and receipt behavior, including repeated-order rejection before stock writes.
 
-- Requisition item validation, duplicate numbers, material resolution, and approval/rejection transitions.
-- Purchase-order creation from approved requisitions, decimal totals across multiple items, item relationships, duplicate order numbers, and missing prices.
-- Goods-receipt stock updates, receipt relationships, duplicate receipt numbers, empty orders, and missing materials.
+[GoodsReceiptIT](src/test/java/com/procureflow/integration/GoodsReceiptIT.java) uses Testcontainers to start an isolated `mysql:8.4` database. Maven Failsafe runs these integration tests during `verify`; Docker and access to pull container images are required. No existing database or application credentials are used. These tests cover:
 
-Repositories are mocked, so these tests need no running MySQL server or database credentials. [GitHub Actions](.github/workflows/java.yml) compiles, runs tests, and packages the application on Java 21 for pushes and pull requests, then uploads Surefire reports.
+- A second receipt with a different number cannot change stock again.
+- Two simultaneous receipt attempts for one order produce one success and one conflict.
+- A receipt-persistence failure rolls back stock and order status, and a later valid retry succeeds.
+- An existing receipt still blocks receipt processing after an order status is manually reset.
+- Duplicate-order receipts return HTTP 409.
+- An order in SENT_TO_VENDOR can be received in full.
 
-**Coverage boundaries:** these are service unit tests, not live database or HTTP integration tests. They do not verify transaction rollback, concurrent requests, JPA mappings, or JSON serialization. The existing ability to receive the same order again using another receipt number remains an unresolved implementation issue described below.
+[GitHub Actions](.github/workflows/java.yml) runs Java 21 verification and packaging, including these MySQL tests, and uploads both Surefire and Failsafe reports. Successful full-workflow JSON responses and live deployment are not verified by these tests.
+
+### Receipt guarantees and existing data
+
+Receipt processing acquires a pessimistic write lock on the purchase-order row inside the existing transaction. Only CREATED or SENT_TO_VENDOR orders without a previous receipt are eligible. The lock remains held until commit/rollback, so another receipt attempt for the same order observes the completed state before changing stock. Partial, cancelled, and fully received orders are rejected.
+
+This change does not repair stock inflated by earlier duplicate receipts. Review existing receipt history and reconcile stock separately; do not delete historical records automatically. No schema migration is required. These are service-level controls, not protection against direct SQL changes. Concurrent inventory changes involving **different orders or direct material edits** remain outside the tested guarantee.
 
 ## Current implementation boundaries
 
 - Receipt processing takes every order line in full. Partial receipts and cancellation are not exposed, despite enum values for those states.
-- A receipt number must be unique, but the service does not prevent receiving the same purchase order again under a different receipt number. Each call would add the full quantities again.
+- Receipt numbers remain unique. An order can be received only once through the full-receipt service; repeated attempts return HTTP 409 without another stock increase.
 - Controllers return JPA entities with bidirectional parent/item relationships. No JSON cycle-handling annotations or response DTOs are present; response serialization needs runtime verification.
 - Business validation is implemented through selected service checks and database constraints. No controller `@Valid` usage or global exception handler is included.
-- JUnit 5 / Mockito unit tests and a Java 21 CI workflow are included. No Swagger/OpenAPI configuration or Postman collection is committed. The tests use mocked repositories; they do not establish database transaction, concurrency, or HTTP serialization correctness.
+- JUnit 5 / Mockito unit tests and a Java 21 CI workflow are included. No Swagger/OpenAPI configuration or Postman collection is committed. MySQL receipt integration tests verify same-order concurrency and rollback. General HTTP serialization and cross-order inventory concurrency remain unverified.
 
 ## Screenshots and demo evidence
 
@@ -271,3 +286,4 @@ Repositories are mocked, so these tests need no running MySQL server or database
 - Add verified request/response examples and a Postman collection after exercising the workflow.
 - Record the tested Java/Maven/MySQL environment and build/run results.
 - Add a short demo recording or hosted demo link if one becomes available.
+

@@ -19,7 +19,7 @@ class GoodsReceiptServiceTest {
         var material = new Material(); ReflectionTestUtils.setField(material, "id", 10L);
         var item = new PurchaseOrderItem(); item.setMaterial(material); item.setQuantity(4);
         var order = new PurchaseOrder(); order.setStatus(PurchaseOrderStatus.CREATED); order.setItems(List.of(item));
-        when(orders.findById(1L)).thenReturn(Optional.of(order));
+        when(orders.findByIdForReceipt(1L)).thenReturn(Optional.of(order));
         return order;
     }
 
@@ -71,6 +71,34 @@ class GoodsReceiptServiceTest {
         assertEquals(PurchaseOrderStatus.CREATED, order.getStatus());
         verify(materials, never()).save(any());
         verify(orders, never()).save(any());
+        verify(receipts, never()).save(any());
+    }
+
+    @Test
+    void anotherReceiptNumberCannotReceiveFullyReceivedOrder() {
+        order().setStatus(PurchaseOrderStatus.FULLY_RECEIVED);
+        assertThrows(ReceiptConflictException.class, () -> service.receiveGoods(1L, "GR-NEW"));
+        verifyNoInteractions(materials);
+        verify(receipts, never()).save(any());
+        verify(orders, never()).save(any());
+    }
+
+    @Test
+    void existingReceiptBlocksOrderEvenIfStatusWasReset() {
+        order();
+        when(receipts.existsByPurchaseOrderId(1L)).thenReturn(true);
+        assertThrows(ReceiptConflictException.class, () -> service.receiveGoods(1L, "GR-NEW"));
+        verifyNoInteractions(materials);
+        verify(receipts, never()).save(any());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(value = PurchaseOrderStatus.class,
+        names = {"CANCELLED", "PARTIALLY_RECEIVED"})
+    void unsupportedStatesCannotIncreaseStock(PurchaseOrderStatus status) {
+        order().setStatus(status);
+        assertThrows(ReceiptConflictException.class, () -> service.receiveGoods(1L, "GR-NEW"));
+        verifyNoInteractions(materials);
         verify(receipts, never()).save(any());
     }
 }

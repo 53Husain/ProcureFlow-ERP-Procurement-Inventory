@@ -9,5 +9,7 @@ public interface GoodsReceiptRepository extends JpaRepository<GoodsReceipt, Long
 
     Optional<GoodsReceipt> findByReceiptNumber(String receiptNumber);
 
+    boolean existsByPurchaseOrderId(Long purchaseOrderId);
+
     boolean existsByReceiptNumber(String receiptNumber);
 }
