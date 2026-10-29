@@ -3,6 +3,7 @@ package com.procureflow.service;
 import com.procureflow.entity.Material;
 import com.procureflow.repository.MaterialRepository;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
@@ -10,13 +11,20 @@ import java.util.List;
 public class MaterialService {
 
     private final MaterialRepository materialRepository;
+    private final MaterialStockLock materialStockLock;
 
-    public MaterialService(MaterialRepository materialRepository) {
+    public MaterialService(MaterialRepository materialRepository, MaterialStockLock materialStockLock) {
         this.materialRepository = materialRepository;
+        this.materialStockLock = materialStockLock;
     }
 
     // Create a new material
     public Material createMaterial(Material material) {
+
+        // Creation must not merge an existing row around the stock lock.
+        if (material.getId() != null) {
+            throw new IllegalArgumentException("New material must not include an id");
+        }
 
         if (materialRepository.existsByMaterialCode(material.getMaterialCode())) {
             throw new IllegalArgumentException("Material code already exists");
@@ -55,9 +63,10 @@ public class MaterialService {
     }
 
     // Update an existing material
+    @Transactional
     public Material updateMaterial(Long id, Material updatedMaterial) {
 
-        Material existingMaterial = getMaterialById(id);
+        Material existingMaterial = materialStockLock.lock(id);
 
         existingMaterial.setMaterialName(updatedMaterial.getMaterialName());
         existingMaterial.setCategory(updatedMaterial.getCategory());
@@ -71,9 +80,10 @@ public class MaterialService {
     }
 
     // Delete material
+    @Transactional
     public void deleteMaterial(Long id) {
 
-        Material material = getMaterialById(id);
+        Material material = materialStockLock.lock(id);
 
         materialRepository.delete(material);
     }

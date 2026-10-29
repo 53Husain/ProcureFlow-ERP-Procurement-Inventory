@@ -16,6 +16,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
 @Service
 public class GoodsReceiptService {
@@ -23,15 +25,18 @@ public class GoodsReceiptService {
     private final GoodsReceiptRepository goodsReceiptRepository;
     private final PurchaseOrderRepository purchaseOrderRepository;
     private final MaterialRepository materialRepository;
+    private final MaterialStockLock materialStockLock;
 
     public GoodsReceiptService(
             GoodsReceiptRepository goodsReceiptRepository,
             PurchaseOrderRepository purchaseOrderRepository,
-            MaterialRepository materialRepository) {
+            MaterialRepository materialRepository,
+            MaterialStockLock materialStockLock) {
 
         this.goodsReceiptRepository = goodsReceiptRepository;
         this.purchaseOrderRepository = purchaseOrderRepository;
         this.materialRepository = materialRepository;
+        this.materialStockLock = materialStockLock;
     }
 
     @Transactional
@@ -70,13 +75,20 @@ public class GoodsReceiptService {
 
         List<GoodsReceiptItem> receiptItems = new ArrayList<>();
 
+        // Different orders can contain the same materials. Lock every distinct
+        // material in the same order to avoid opposite-line-order deadlocks.
+        // Refresh each only once: repeated lines must accumulate, not reset stock.
+        Map<Long, Material> lockedMaterials = new TreeMap<>();
+        for (PurchaseOrderItem item : purchaseOrder.getItems()) {
+            lockedMaterials.put(item.getMaterial().getId(), null);
+        }
+        for (Long materialId : lockedMaterials.keySet()) {
+            lockedMaterials.put(materialId, materialStockLock.lock(materialId));
+        }
+
         for (PurchaseOrderItem orderItem : purchaseOrder.getItems()) {
 
-            Material material = materialRepository
-                    .findById(orderItem.getMaterial().getId())
-                    .orElseThrow(() ->
-                            new RuntimeException(
-                                    "Material not found"));
+            Material material = lockedMaterials.get(orderItem.getMaterial().getId());
 
             int receivedQuantity = orderItem.getQuantity();
 

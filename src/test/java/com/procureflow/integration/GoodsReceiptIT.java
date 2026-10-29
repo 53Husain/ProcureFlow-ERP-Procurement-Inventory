@@ -223,6 +223,16 @@ class GoodsReceiptIT {
         assertEquals("MAT-1", materials.findById(materialId).orElseThrow().getMaterialCode());
     }
 
+    @Test void twoReceiptsInOneTransactionPreserveEarlierPendingStockChanges() {
+        Long secondOrder = extraOrder("2", List.of(materialId), List.of(7));
+        transaction().executeWithoutResult(status -> {
+            service.receiveGoods(orderId, "GR-A");
+            service.receiveGoods(secondOrder, "GR-B");
+        });
+        assertStock(materialId, 15);
+        assertTwoReceipts(secondOrder, 2);
+    }
+
     void assertStock(Long id, int expected) {
         assertEquals(expected, materials.findById(id).orElseThrow().getCurrentStock());
     }

@@ -13,7 +13,8 @@ class GoodsReceiptServiceTest {
     private final GoodsReceiptRepository receipts = mock(GoodsReceiptRepository.class);
     private final PurchaseOrderRepository orders = mock(PurchaseOrderRepository.class);
     private final MaterialRepository materials = mock(MaterialRepository.class);
-    private final GoodsReceiptService service = new GoodsReceiptService(receipts, orders, materials);
+    private final MaterialStockLock stockLock = mock(MaterialStockLock.class);
+    private final GoodsReceiptService service = new GoodsReceiptService(receipts, orders, materials, stockLock);
 
     private PurchaseOrder order() {
         var material = new Material(); ReflectionTestUtils.setField(material, "id", 10L);
@@ -27,7 +28,7 @@ class GoodsReceiptServiceTest {
     void addsReceivedQuantityAndLinksReceipt() {
         var order = order();
         var material = new Material(); material.setCurrentStock(7);
-        when(materials.findById(10L)).thenReturn(Optional.of(material));
+        when(stockLock.lock(10L)).thenReturn(material);
         when(receipts.save(any(GoodsReceipt.class))).thenAnswer(i -> i.getArgument(0));
         var receipt = service.receiveGoods(1L, "GR-1");
         assertEquals(11, material.getCurrentStock());
@@ -50,7 +51,7 @@ class GoodsReceiptServiceTest {
         when(receipts.existsByReceiptNumber("GR-1")).thenReturn(true);
         assertThrows(IllegalArgumentException.class, () -> service.receiveGoods(1L, "GR-1"));
         assertEquals(PurchaseOrderStatus.CREATED, order.getStatus());
-        verifyNoInteractions(materials);
+        verifyNoInteractions(materials, stockLock);
         verify(orders, never()).save(any());
         verify(receipts, never()).save(any());
     }
@@ -59,14 +60,14 @@ class GoodsReceiptServiceTest {
     void emptyOrderDoesNotSaveReceipt() {
         order().setItems(List.of());
         assertThrows(IllegalStateException.class, () -> service.receiveGoods(1L, "GR-1"));
-        verifyNoInteractions(materials);
+        verifyNoInteractions(materials, stockLock);
         verify(receipts, never()).save(any());
     }
 
     @Test
     void missingMaterialPreventsFirstStockWrite() {
         var order = order();
-        when(materials.findById(10L)).thenReturn(Optional.empty());
+        when(stockLock.lock(10L)).thenThrow(new IllegalArgumentException("Material not found"));
         assertThrows(RuntimeException.class, () -> service.receiveGoods(1L, "GR-1"));
         assertEquals(PurchaseOrderStatus.CREATED, order.getStatus());
         verify(materials, never()).save(any());
@@ -78,7 +79,7 @@ class GoodsReceiptServiceTest {
     void anotherReceiptNumberCannotReceiveFullyReceivedOrder() {
         order().setStatus(PurchaseOrderStatus.FULLY_RECEIVED);
         assertThrows(ReceiptConflictException.class, () -> service.receiveGoods(1L, "GR-NEW"));
-        verifyNoInteractions(materials);
+        verifyNoInteractions(materials, stockLock);
         verify(receipts, never()).save(any());
         verify(orders, never()).save(any());
     }
@@ -88,7 +89,7 @@ class GoodsReceiptServiceTest {
         order();
         when(receipts.existsByPurchaseOrderId(1L)).thenReturn(true);
         assertThrows(ReceiptConflictException.class, () -> service.receiveGoods(1L, "GR-NEW"));
-        verifyNoInteractions(materials);
+        verifyNoInteractions(materials, stockLock);
         verify(receipts, never()).save(any());
     }
 
@@ -98,7 +99,7 @@ class GoodsReceiptServiceTest {
     void unsupportedStatesCannotIncreaseStock(PurchaseOrderStatus status) {
         order().setStatus(status);
         assertThrows(ReceiptConflictException.class, () -> service.receiveGoods(1L, "GR-NEW"));
-        verifyNoInteractions(materials);
+        verifyNoInteractions(materials, stockLock);
         verify(receipts, never()).save(any());
     }
 }

@@ -253,6 +253,12 @@ The [service unit tests](src/test/java/com/procureflow/service) use mocked repos
 - An existing receipt still blocks receipt processing after an order status is manually reset.
 - Duplicate-order receipts return HTTP 409.
 - An order in SENT_TO_VENDOR can be received in full.
+- Different orders receiving the same material both commit their quantities: initial stock 3 plus receipts of 5 and 7 ends at 15.
+- An overlapping transaction that already loaded stock refreshes it after another receipt or a direct material update commits.
+- Orders listing shared materials in opposite order both complete; repeated material lines accumulate correctly.
+- A failed multi-material receipt rolls back all stock changes and receipt items; a retry succeeds.
+- Two receipts grouped in one transaction preserve the first receipt's stock changes.
+- Material creation rejects an existing ID instead of merging around the update lock.
 
 [GitHub Actions](.github/workflows/java.yml) runs Java 21 verification and packaging, including these MySQL tests, and uploads both Surefire and Failsafe reports. Successful full-workflow JSON responses and live deployment are not verified by these tests.
 
@@ -260,7 +266,11 @@ The [service unit tests](src/test/java/com/procureflow/service) use mocked repos
 
 Receipt processing acquires a pessimistic write lock on the purchase-order row inside the existing transaction. Only CREATED or SENT_TO_VENDOR orders without a previous receipt are eligible. The lock remains held until commit/rollback, so another receipt attempt for the same order observes the completed state before changing stock. Partial, cancelled, and fully received orders are rejected.
 
-This change does not repair stock inflated by earlier duplicate receipts. Review existing receipt history and reconcile stock separately; do not delete historical records automatically. No schema migration is required. These are service-level controls, not protection against direct SQL changes. Concurrent inventory changes involving **different orders or direct material edits** remain outside the tested guarantee.
+Before changing stock, receipt processing also locks every distinct material row in ascending ID order using `PESSIMISTIC_WRITE`. Each material is refreshed under its lock so JPA's first-level cache and an older MySQL repeatable-read snapshot cannot supply stale stock. All material locks remain held until commit/rollback. Repeated lines for one material reuse the locked entity and accumulate quantities. Consistent lock order prevents the opposite-line-order deadlocks covered by the integration test; it is not a promise that arbitrary external transactions cannot deadlock.
+
+Material update and delete operations use the same material lock inside a transaction. Creation accepts only a new material without an ID. **PUT remains an absolute stock replacement**, not an increment or a version-checked edit: if a user submits an old stock value after a receipt, that explicit replacement can still overwrite the total. This change does not introduce optimistic concurrency checks for stale client forms. Lock waits/timeouts fail the transaction; automatic retries are not implemented.
+
+No schema migration is required. These controls apply to the application service paths, not arbitrary repository calls or direct SQL changes. They do not repair stock already affected by duplicate receipts or lost updates. Review receipt history and reconcile existing stock separately; do not delete historical records automatically.
 
 ## Current implementation boundaries
 
@@ -268,7 +278,7 @@ This change does not repair stock inflated by earlier duplicate receipts. Review
 - Receipt numbers remain unique. An order can be received only once through the full-receipt service; repeated attempts return HTTP 409 without another stock increase.
 - Controllers return JPA entities with bidirectional parent/item relationships. No JSON cycle-handling annotations or response DTOs are present; response serialization needs runtime verification.
 - Business validation is implemented through selected service checks and database constraints. No controller `@Valid` usage or global exception handler is included.
-- JUnit 5 / Mockito unit tests and a Java 21 CI workflow are included. No Swagger/OpenAPI configuration or Postman collection is committed. MySQL receipt integration tests verify same-order concurrency and rollback. General HTTP serialization and cross-order inventory concurrency remain unverified.
+- JUnit 5 / Mockito unit tests and a Java 21 CI workflow are included. No Swagger/OpenAPI configuration or Postman collection is committed. MySQL receipt integration tests cover same-order and cross-order concurrency, stale managed stock, and rollback. General HTTP serialization and live deployment remain unverified.
 
 ## Screenshots and demo evidence
 
