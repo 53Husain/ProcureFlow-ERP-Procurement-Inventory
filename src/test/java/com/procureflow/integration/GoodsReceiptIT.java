@@ -12,12 +12,15 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -27,7 +30,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @Testcontainers
 class GoodsReceiptIT {
-    @Container static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.4");
+    @Container static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.4")
+            .withCommand("--innodb-lock-wait-timeout=10");
     @DynamicPropertySource
     static void database(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", MYSQL::getJdbcUrl);
@@ -42,6 +46,8 @@ class GoodsReceiptIT {
     @Autowired GoodsReceiptRepository receipts;
     @Autowired JdbcTemplate jdbc;
     @Autowired MockMvc mvc;
+    @Autowired PlatformTransactionManager transactionManager;
+    @Autowired MaterialService materialService;
     Long orderId, materialId;
 
     @BeforeEach
@@ -124,5 +130,162 @@ class GoodsReceiptIT {
         jdbc.update("update purchase_orders set status = 'SENT_TO_VENDOR' where id = ?", orderId);
         service.receiveGoods(orderId, "GR-1");
         assertReceivedOnce();
+    }
+
+    @Test void differentOrdersReceivingSameMaterialKeepBothIncrements() throws Exception {
+        Long secondOrder = extraOrder("2", List.of(materialId), List.of(7));
+        concurrently(() -> service.receiveGoods(orderId, "GR-A"),
+                () -> service.receiveGoods(secondOrder, "GR-B"));
+        assertStock(materialId, 15); // initial 3 + first receipt 5 + second receipt 7
+        assertTwoReceipts(secondOrder, 2);
+    }
+
+    @Test void overlappingTransactionsRefreshPreviouslyLoadedStock() throws Exception {
+        Long secondOrder = extraOrder("2", List.of(materialId), List.of(7));
+        CountDownLatch snapshotsLoaded = new CountDownLatch(2);
+        CountDownLatch firstMayReceive = new CountDownLatch(1);
+        CountDownLatch secondMayReceive = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> first = pool.submit(() -> transaction().executeWithoutResult(status -> {
+                assertStock(materialId, 3); // managed entity + MySQL repeatable-read snapshot
+                snapshotsLoaded.countDown(); await(firstMayReceive);
+                service.receiveGoods(orderId, "GR-A");
+            }));
+            Future<?> second = pool.submit(() -> transaction().executeWithoutResult(status -> {
+                assertStock(materialId, 3);
+                snapshotsLoaded.countDown(); await(secondMayReceive);
+                service.receiveGoods(secondOrder, "GR-B");
+            }));
+            assertTrue(snapshotsLoaded.await(10, TimeUnit.SECONDS));
+            firstMayReceive.countDown(); first.get(30, TimeUnit.SECONDS);
+            // The second transaction is already open with stock=3 cached.
+            // It must use the committed 8, not silently overwrite it with 3+7.
+            secondMayReceive.countDown(); second.get(30, TimeUnit.SECONDS);
+            assertStock(materialId, 15);
+            assertTwoReceipts(secondOrder, 2);
+        } finally {
+            firstMayReceive.countDown(); secondMayReceive.countDown(); stop(pool);
+        }
+    }
+
+    @Test void oppositeMaterialLineOrderCompletesWithoutLosingStock() throws Exception {
+        Long otherMaterial = extraMaterial("MAT-2", 11);
+        // Two completely different orders list the same materials in reverse order.
+        Long left = extraOrder("LEFT", List.of(materialId, otherMaterial), List.of(5, 2));
+        Long right = extraOrder("RIGHT", List.of(otherMaterial, materialId), List.of(4, 7));
+        concurrently(() -> service.receiveGoods(left, "GR-L"),
+                () -> service.receiveGoods(right, "GR-R"));
+        assertStock(materialId, 15); assertStock(otherMaterial, 17);
+        assertEquals(2, receipts.count());
+        assertEquals(4, jdbc.queryForObject("select count(*) from goods_receipt_items", Integer.class));
+        assertEquals(PurchaseOrderStatus.FULLY_RECEIVED, orders.findById(left).orElseThrow().getStatus());
+        assertEquals(PurchaseOrderStatus.FULLY_RECEIVED, orders.findById(right).orElseThrow().getStatus());
+    }
+
+    @Test void repeatedMaterialLinesAccumulateAndFailureRollsBackEveryMaterial() {
+        Long otherMaterial = extraMaterial("MAT-2", 11);
+        Long repeated = extraOrder("REPEAT", List.of(materialId, otherMaterial, materialId), List.of(2, 4, 5));
+        assertThrows(RuntimeException.class, () -> service.receiveGoods(repeated, null));
+        assertStock(materialId, 3); assertStock(otherMaterial, 11);
+        assertEquals(0, receipts.count());
+        assertEquals(0, jdbc.queryForObject("select count(*) from goods_receipt_items", Integer.class));
+        assertEquals(PurchaseOrderStatus.CREATED, orders.findById(repeated).orElseThrow().getStatus());
+        service.receiveGoods(repeated, "GR-RETRY");
+        assertStock(materialId, 10); assertStock(otherMaterial, 15);
+        assertEquals(1, receipts.count());
+        assertEquals(3, jdbc.queryForObject("select count(*) from goods_receipt_items", Integer.class));
+    }
+
+    @Test void receiptRefreshesStockAfterDirectMaterialUpdateCommits() throws Exception {
+        CountDownLatch cached = new CountDownLatch(1), edited = new CountDownLatch(1);
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<?> receipt = pool.submit(() -> transaction().executeWithoutResult(status -> {
+                assertStock(materialId, 3); cached.countDown(); await(edited);
+                service.receiveGoods(orderId, "GR-A");
+            }));
+            assertTrue(cached.await(10, TimeUnit.SECONDS));
+            Material update = materials.findById(materialId).orElseThrow();
+            update.setCurrentStock(20);
+            materialService.updateMaterial(materialId, update);
+            edited.countDown(); receipt.get(30, TimeUnit.SECONDS);
+            assertStock(materialId, 25);
+            assertEquals(1, receipts.count());
+        } finally { edited.countDown(); stop(pool); }
+    }
+
+    @Test void newMaterialCannotMergeAnExistingMaterialId() {
+        Material existing = materials.findById(materialId).orElseThrow();
+        existing.setMaterialCode("CHANGED-CODE"); existing.setCurrentStock(99);
+        assertThrows(IllegalArgumentException.class, () -> materialService.createMaterial(existing));
+        assertStock(materialId, 3);
+        assertEquals("MAT-1", materials.findById(materialId).orElseThrow().getMaterialCode());
+    }
+
+    void assertStock(Long id, int expected) {
+        assertEquals(expected, materials.findById(id).orElseThrow().getCurrentStock());
+    }
+
+    void assertTwoReceipts(Long secondOrder, int itemCount) {
+        assertEquals(2, receipts.count());
+        assertEquals(itemCount, jdbc.queryForObject("select count(*) from goods_receipt_items", Integer.class));
+        assertEquals(PurchaseOrderStatus.FULLY_RECEIVED, orders.findById(orderId).orElseThrow().getStatus());
+        assertEquals(PurchaseOrderStatus.FULLY_RECEIVED, orders.findById(secondOrder).orElseThrow().getStatus());
+    }
+
+    Long extraMaterial(String code, int stock) {
+        Material material = new Material();
+        material.setMaterialCode(code); material.setMaterialName(code);
+        material.setUnitOfMeasure("PCS"); material.setUnitPrice(BigDecimal.TEN);
+        material.setCurrentStock(stock); material.setReorderLevel(1); material.setActive(true);
+        return materials.save(material).getId();
+    }
+
+    Long extraOrder(String suffix, List<Long> ids, List<Integer> quantities) {
+        PurchaseRequisition req = new PurchaseRequisition();
+        req.setRequisitionNumber("REQ-" + suffix); req.setRequestedBy("Demo");
+        req.setDepartment("Operations"); req.setRequestedDate(LocalDateTime.now());
+        req.setStatus(RequisitionStatus.CONVERTED_TO_PO); req = requisitions.save(req);
+        PurchaseOrder order = new PurchaseOrder();
+        order.setPurchaseOrderNumber("PO-" + suffix); order.setVendor(vendors.findAll().get(0));
+        order.setRequisition(req); order.setOrderDate(LocalDateTime.now());
+        order.setStatus(PurchaseOrderStatus.CREATED);
+        List<PurchaseOrderItem> items = new ArrayList<>();
+        for (int i = 0; i < ids.size(); i++) {
+            PurchaseOrderItem item = new PurchaseOrderItem();
+            item.setPurchaseOrder(order); item.setMaterial(materials.findById(ids.get(i)).orElseThrow());
+            item.setQuantity(quantities.get(i)); item.setUnitPrice(BigDecimal.TEN); items.add(item);
+        }
+        order.setItems(items);
+        order.setTotalAmount(BigDecimal.TEN.multiply(BigDecimal.valueOf(quantities.stream().mapToInt(Integer::intValue).sum())));
+        return orders.save(order).getId();
+    }
+
+    TransactionTemplate transaction() {
+        TransactionTemplate template = new TransactionTemplate(transactionManager);
+        template.setTimeout(25);
+        return template;
+    }
+
+    void concurrently(Runnable first, Runnable second) throws Exception {
+        CountDownLatch ready = new CountDownLatch(2), start = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> left = pool.submit(() -> { ready.countDown(); await(start); first.run(); });
+            Future<?> right = pool.submit(() -> { ready.countDown(); await(start); second.run(); });
+            assertTrue(ready.await(10, TimeUnit.SECONDS)); start.countDown();
+            left.get(30, TimeUnit.SECONDS); right.get(30, TimeUnit.SECONDS);
+        } finally { start.countDown(); stop(pool); }
+    }
+
+    static void await(CountDownLatch latch) {
+        try { assertTrue(latch.await(15, TimeUnit.SECONDS), "Timed out waiting for concurrent transaction"); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
+    }
+
+    static void stop(ExecutorService pool) throws InterruptedException {
+        pool.shutdownNow();
+        assertTrue(pool.awaitTermination(15, TimeUnit.SECONDS), "Concurrent tasks did not terminate");
     }
 }
