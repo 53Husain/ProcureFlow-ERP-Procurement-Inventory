@@ -1,0 +1,113 @@
+{
+  "info": {
+    "name": "ProcureFlow local examples",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Material/vendor examples. Full procurement responses have unresolved bidirectional entity serialization risks; see docs/api-examples.md."
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8081"
+    },
+    {
+      "key": "runId",
+      "value": "demo-001"
+    },
+    {
+      "key": "materialId",
+      "value": ""
+    },
+    {
+      "key": "vendorId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Create material",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/materials",
+        "description": "",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"materialCode\": \"MAT-{{runId}}\",\n  \"materialName\": \"Demo Bolt\",\n  \"category\": \"Hardware\",\n  \"unitOfMeasure\": \"PCS\",\n  \"unitPrice\": 12.5,\n  \"currentStock\": 0,\n  \"reorderLevel\": 10,\n  \"active\": true\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code >= 200 && pm.response.code < 300) { pm.collectionVariables.set(\"materialId\", pm.response.json().id); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. List low stock",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/materials/low-stock",
+        "description": ""
+      }
+    },
+    {
+      "name": "3. Create vendor",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/vendors",
+        "description": "",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"vendorCode\": \"VEN-{{runId}}\",\n  \"vendorName\": \"Demo Supplier\",\n  \"email\": \"supplier@example.com\",\n  \"active\": true\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code >= 200 && pm.response.code < 300) { pm.collectionVariables.set(\"vendorId\", pm.response.json().id); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Read material",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/materials/{{materialId}}",
+        "description": ""
+      }
+    }
+  ]
+}

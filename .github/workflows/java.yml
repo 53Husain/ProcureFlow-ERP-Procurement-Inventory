@@ -15,7 +15,7 @@ jobs:
           java-version: '21'
           cache: maven
       - name: Compile, test, and package
-        run: mvn --batch-mode --no-transfer-progress clean verify
+        run: ./mvnw --batch-mode --no-transfer-progress clean verify
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -26,3 +26,30 @@ jobs:
             target/failsafe-reports/
           if-no-files-found: warn
 
+      - name: Start disposable local database
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+          docker compose up -d --wait
+      - name: Verify local setup and API examples
+        run: python3 scripts/local_smoke.py
+      - name: Upload local smoke log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-smoke-log
+          path: .smoke/application.log
+      - name: Stop disposable database
+        if: always()
+        run: docker compose down -v
+  wrapper-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Verify Windows Maven wrapper
+        shell: pwsh
+        run: .\mvnw.cmd --version

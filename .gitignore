@@ -37,3 +37,12 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
+# Local setup secrets and smoke-test output
+.env
+.env.*
+!.env.example
+.smoke/
+
+__pycache__/
+*.pyc

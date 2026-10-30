@@ -1,5 +1,7 @@
 # ProcureFlow — Procurement & Inventory REST API
 
+**Quick start:** [Local MySQL with Docker Compose + Maven Wrapper](docs/local-setup.md) · [Postman API examples](docs/api-examples.md)
+
 A Java backend that models procurement from a department's material request to goods receipt and stock updates. Built with **Java 21, Spring Boot 3.5.5, Spring Data JPA, Hibernate, and MySQL**.
 
 The project demonstrates layered backend design, relational entity mapping, approval rules, purchase order calculation, and transactional inventory updates.
@@ -89,7 +91,7 @@ IDs use database identity generation. Material codes, vendor codes, requisition 
 
 ### Prerequisites
 
-- JDK **21** and Maven installed and available on your path. A Maven wrapper is not included.
+- JDK **21** installed and available on your path. The Maven wrapper is included; use `./mvnw` or `mvnw.cmd`.
 - A running MySQL server and an account permitted to create/update tables in the project database.
 - Git; optionally curl or Postman for API requests.
 
@@ -134,7 +136,7 @@ Hibernate is configured to create/update tables from entity mappings when the ap
 ### 3. Run the application
 
 ```bash
-mvn spring-boot:run
+./mvnw spring-boot:run
 ```
 
 The configured API base URL is `http://localhost:8080/api`. This repository has no homepage UI; use an API client.
@@ -142,7 +144,7 @@ The configured API base URL is `http://localhost:8080/api`. This repository has 
 Alternatively, build and run the JAR:
 
 ```bash
-mvn clean package
+./mvnw clean package
 java -jar target/procureflow-0.0.1-SNAPSHOT.jar
 ```
 
@@ -234,13 +236,13 @@ curl http://localhost:8080/api/materials/1
 Run unit tests with JDK 21 and Maven (no database required):
 
 ```sh
-mvn test
+./mvnw test
 ```
 
 Run the complete build, including MySQL integration tests, with **Docker running**:
 
 ```sh
-mvn clean verify
+./mvnw clean verify
 ```
 
 The [service unit tests](src/test/java/com/procureflow/service) use mocked repositories. They cover requisition validation/transitions, order totals, and receipt behavior, including repeated-order rejection before stock writes.
@@ -278,7 +280,7 @@ No schema migration is required. These controls apply to the application service
 - Receipt numbers remain unique. An order can be received only once through the full-receipt service; repeated attempts return HTTP 409 without another stock increase.
 - Controllers return JPA entities with bidirectional parent/item relationships. No JSON cycle-handling annotations or response DTOs are present; response serialization needs runtime verification.
 - Business validation is implemented through selected service checks and database constraints. No controller `@Valid` usage or global exception handler is included.
-- JUnit 5 / Mockito unit tests and a Java 21 CI workflow are included. No Swagger/OpenAPI configuration or Postman collection is committed. MySQL receipt integration tests cover same-order and cross-order concurrency, stale managed stock, and rollback. General HTTP serialization and live deployment remain unverified.
+- JUnit 5 / Mockito unit tests and a Java 21 CI workflow are included. A Postman collection is committed in `docs/`; Swagger/OpenAPI is not configured. MySQL receipt integration tests cover same-order and cross-order concurrency, stale managed stock, and rollback. General HTTP serialization and live deployment remain unverified.
 
 ## Screenshots and demo evidence
 
@@ -293,7 +295,7 @@ No schema migration is required. These controls apply to the application service
 
 **TODO — missing documentation:**
 
-- Add verified request/response examples and a Postman collection after exercising the workflow.
+- Expand HTTP verification beyond the material/vendor smoke checks to the complete procurement workflow.
 - Record the tested Java/Maven/MySQL environment and build/run results.
 - Add a short demo recording or hosted demo link if one becomes available.
 
