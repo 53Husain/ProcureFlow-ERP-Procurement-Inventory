@@ -2,6 +2,8 @@
 
 **Quick start:** [Local MySQL with Docker Compose + Maven Wrapper](docs/local-setup.md) · [Postman API examples](docs/api-examples.md)
 
+Commands below use `./mvnw` on Linux/macOS; use `.\mvnw.cmd` on Windows PowerShell.
+
 A Java backend that models procurement from a department's material request to goods receipt and stock updates. Built with **Java 21, Spring Boot 3.5.5, Spring Data JPA, Hibernate, and MySQL**.
 
 The project demonstrates layered backend design, relational entity mapping, approval rules, purchase order calculation, and transactional inventory updates.
@@ -95,7 +97,7 @@ IDs use database identity generation. Material codes, vendor codes, requisition 
 - A running MySQL server and an account permitted to create/update tables in the project database.
 - Git; optionally curl or Postman for API requests.
 
-**TODO — verified environment:** record the MySQL and Maven versions used for a successful local run.
+The Compose setup uses MySQL 8.4 and the wrapper pins Maven 3.9.9. CI checks this setup on Java 21.
 
 ### 1. Get the source
 
@@ -233,7 +235,7 @@ curl http://localhost:8080/api/materials/1
 
 ## Automated tests
 
-Run unit tests with JDK 21 and Maven (no database required):
+Run unit tests with JDK 21 and the included wrapper (no database required):
 
 ```sh
 ./mvnw test
@@ -296,6 +298,6 @@ No schema migration is required. These controls apply to the application service
 **TODO — missing documentation:**
 
 - Expand HTTP verification beyond the material/vendor smoke checks to the complete procurement workflow.
-- Record the tested Java/Maven/MySQL environment and build/run results.
+- Add more full-workflow HTTP coverage beyond the local smoke checks.
 - Add a short demo recording or hosted demo link if one becomes available.
 
